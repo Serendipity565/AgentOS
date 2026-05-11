@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentOS</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4efe6;
+      --panel: #fff9f0;
+      --ink: #1f2937;
+      --accent: #0f766e;
+      --border: #d6c8b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      background:
+        radial-gradient(circle at top left, #efe2cb 0%, transparent 28%),
+        radial-gradient(circle at bottom right, #d9efe8 0%, transparent 24%),
+        var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .shell {
+      width: min(860px, 100%);
+      background: rgba(255, 249, 240, 0.92);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(31, 41, 55, 0.10);
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .title {
+      font-size: 24px;
+      margin: 0;
+    }
+    .sub {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      color: #5b6470;
+    }
+    .log {
+      min-height: 360px;
+      max-height: 50vh;
+      overflow: auto;
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+    }
+    .msg {
+      padding: 14px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      white-space: pre-wrap;
+    }
+    .msg.user {
+      background: #e9f7f4;
+    }
+    form {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      padding: 20px;
+      border-top: 1px solid var(--border);
+    }
+    input, button {
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      padding: 12px 14px;
+    }
+    button {
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+      min-width: 96px;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="header">
+      <div>
+        <h1 class="title">AgentOS</h1>
+        <div class="sub">agent runtime / web adapter / cli adapter</div>
+      </div>
+      <div class="sub">POST /api/chat</div>
+    </section>
+    <section id="log" class="log">
+      <div class="msg">Try: hello, /help, /skill echo hi, /mcp time</div>
+    </section>
+    <form id="chat-form">
+      <input id="message" name="message" placeholder="Send a message" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('message');
+    const log = document.getElementById('log');
+    const sessionId = 'web';
+
+    function append(text, kind) {
+      const el = document.createElement('div');
+      el.className = 'msg' + (kind ? ' ' + kind : '');
+      el.textContent = text;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function parseSSEDataLine(line) {
+      const raw = line.slice(5);
+      return raw.startsWith(' ') ? raw.slice(1) : raw;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      append(message, 'user');
+      input.value = '';
+
+      const resp = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, message })
+      });
+      if (!resp.ok || !resp.body) {
+        const text = await resp.text();
+        append(text || 'unknown response');
+        return;
+      }
+
+      const replyEl = document.createElement('div');
+      replyEl.className = 'msg';
+      replyEl.textContent = '';
+      log.appendChild(replyEl);
+      log.scrollTop = log.scrollHeight;
+
+      const reader = resp.body
+        .pipeThrough(new TextDecoderStream())
+        .getReader();
+
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const rawEvent of events) {
+          const lines = rawEvent.split('\n');
+          let eventName = 'message';
+          const dataLines = [];
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              dataLines.push(parseSSEDataLine(line));
+            }
+          }
+
+          const data = dataLines.join('\n');
+          if (eventName === 'error') {
+            replyEl.textContent = data || 'unknown response';
+            continue;
+          }
+          if (eventName === 'done') {
+            continue;
+          }
+          replyEl.textContent += data;
+          log.scrollTop = log.scrollHeight;
+        }
+      }
+    });
+  </script>
+</body>
+</html>
